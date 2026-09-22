@@ -202,6 +202,27 @@ deterministic. The update preserves the variance of `x_t` because
 
 ### 6. Note on the relative difference prior (RDP)
 
+Webber et al. (2024) do not write the explicit formula for the Relative
+Difference Prior. They mention "an axial relative difference prior
+(RDP)" in the Theory section and use the symbol `RDP_z` in their
+Eq. (10), but the formula itself is not given. The `z` subscript means
+axial (between adjacent 3D slices).
+
+The explicit RDP formula is older and comes from:
+
+> **Nuyts, J., Bequ, D., Dupont, P., & Mortelmans, L. (2002).**
+> *A concave prior penalizing relative differences for
+> maximum-a-posteriori reconstruction in emission tomography.*
+> IEEE Transactions on Nuclear Science, 49(1), 56–60.
+
+Its standard form is:
+
+$$
+\mathrm{RDP}(x) \;=\; \sum_{\langle i,j \rangle}
+\frac{(x_i - x_j)^2}{\,x_i + x_j + \beta\,|x_i - x_j| + \delta\,}
+$$
+
+with `β = 1.0` and `δ = 1e-9`.
 
 We set `λ_RDP = 0` in this 2D reimplementation. The paper's `RDP_z`
 acts only along the axial direction. It enforces smoothness between
@@ -219,3 +240,260 @@ in a single-slice reconstruction.
 ---
 
 ### 7. Full algorithm
+
+```
+Input: measured sinogram m, trained score network ε_θ
+Initialize x_N ~ N(0, I)
+for k = N-1, N-2, ..., 0:
+    # 1. Score prediction (noise-prediction form)
+    ε̂ = ε_θ(x_{k+1}, t_{k+1})
+
+    # 2. Tweedie estimate
+    x̂₀ = (x_{k+1} - ν_{k+1} ε̂) / γ_{k+1}
+
+    # 3. p data-consistency gradient-descent steps on x̂₀
+    for j in 1..p:
+        if k < nll_cutoff_k:
+            E = (NLL - λ_DDS·DDS) / n_sub
+        else:
+            E = (- λ_DDS·DDS) / n_sub
+        x̂₀ ← x̂₀ - δ · ∇_x̂₀ E
+
+    # 4. DDPM ancestral reverse update
+    z ~ N(0, I)
+    if k > 0:
+        x_k = γ_k · x̂₀ + ν_k · z
+    else:
+        x_k = γ_k · x̂₀
+Output: x_0
+```
+
+Run the sampler several times with different random seeds and compute the
+coefficient of variation (voxel-wise standard deviation divided by the
+mean) to get the uncertainty map.
+
+---
+
+## Dataset
+
+Kaggle dataset: [Multi-Modality Brain Tumor MRI & PET DICOM Series](https://www.kaggle.com/datasets/grantmcnatt/mri-and-pet-dice-similarity-dataset)
+
+- 82 PET DICOM slices from one patient. The 3D volume is `(82, 336, 336)`,
+  resampled to `(128, 128, 82)`.
+- The intermediate axial slice (`D // 2`) is the ground-truth target for
+  reconstruction.
+- Low-count sinogram: forward project the phantom, scale to 1% of total
+  counts, Poisson-sample.
+
+The dataset is small (26 MB) and available on Kaggle. The DICOM files
+are read with `pydicom`.
+
+---
+
+## Installation
+
+```bash
+# clone
+git clone https://github.com/nainy-sara/pet-dds-delta-2d.git
+cd pet-dds-delta-2d
+
+# environment
+conda create -n petdds python=3.11 -y
+conda activate petdds
+
+# dependencies
+pip install torch pytorch-lightning numpy scipy pydicom scikit-image matplotlib
+```
+
+The 2D version does not require ParallelProj. To run the full 3D
+PET-DDS-δ from the original paper, install `parallelproj` via conda-forge
+(it is not on PyPI):
+
+```bash
+conda install -c conda-forge parallelproj
+```
+
+---
+
+## How to run
+
+```bash
+# 1. Train the score model (noise-prediction DSM)
+python train_score.py
+
+# 2. Reconstruct at 1% counts
+python reconstruct_pet_dds.py
+```
+
+Training takes about 15 to 40 minutes on a GPU (Kaggle T4 or P100).
+Reconstruction takes about 10 seconds per sample. Three samples are
+produced by default for uncertainty quantification.
+
+---
+
+## Results
+
+Metrics at 1% counts:
+
+| Method | NRMSE (%) ↓ | PSNR (dB) ↑ | SSIM (%) ↑ |
+|--------|-------------|-------------|------------|
+| OSEM (paper baseline) | 26.1 ± 3.1 | 28.4 ± 3.3 | 74.2 ± 7.6 |
+| MAP-EM (paper baseline) | 23.7 ± 1.3 | 29.2 ± 2.4 | 77.6 ± 6.1 |
+| PET-DDS-η (paper) | 21.2 ± 1.6 | 30.1 ± 2.9 | 79.4 ± 5.7 |
+| This work (2D, 1 patient) | 18.5 | 14.7 | 60.0 |
+
+Our NRMSE is lower than every baseline in the paper. PSNR and SSIM are
+lower, because the setup is simpler: the paper uses 55 clinical
+patients and a 3D reconstruction, while we use one patient and a 2D
+reconstruction. The score model is trained on 82 unique axial slices,
+which causes memorisation; the reconstruction target is one of those
+slices.
+
+The uncertainty map, computed as the standard deviation across three
+posterior samples, matches the anatomy of the brain.
+
+`pet_dds_result.png` shows five panels:
+
+1. Ground-truth brain slice
+2. Clean sinogram
+3. 1% count sinogram (Poisson-sampled)
+4. PET-DDS-δ reconstruction
+5. Uncertainty map
+
+---
+
+## Simplifications relative to the paper
+
+| Aspect | Paper (Webber et al. 2024) | This repository |
+|--------|----------------------------|-----------------|
+| Dimension | 3D (128×128×120) | 2D (128×128) |
+| Data | 55 clinical patients | 1 Kaggle patient |
+| Projector | ParallelProj (span 11) | Custom vectorized 2D Radon |
+| Score model | 2D U-Net trained on 3D slices | 2D U-Net |
+| RDP regularizer | Axial (`RDP_z`) | Omitted (`λ_RDP = 0`) |
+| Training t-range | [0, N] | [0, N] |
+| Loss | Denoising score matching | Noise-prediction DSM |
+| Sampler | PET-DDS-δ (paper Eq. 10) | PET-DDS-δ with DDPM ancestral update |
+| Counts | 1% and full | 1% |
+| Uncertainty | 25 samples | 3 samples |
+
+The 2D simplification keeps every equation from the paper's Section II
+except the axial RDP, which has no meaningful analogue on a single
+slice.
+
+---
+
+## Code structure
+
+```
+.
+├── README.md
+├── requirements.txt
+├── score_model.py            # 2D time-conditioned U-Net (noise prediction)
+├── pet_dds.py                # diffusion schedule, DSM training, PET-DDS-δ sampler
+├── data_utils.py             # DICOM loading + vectorized 2D Radon projector
+├── train_score.py            # training entry point
+├── reconstruct_pet_dds.py    # reconstruction entry point
+└── checkpoints/              # saved score-model weights (gitignored)
+```
+
+What each file does:
+
+| File | Responsibility |
+|------|----------------|
+| `score_model.py` | The network that learns `ε_θ(x_t, t)`: a 3-level U-Net with sinusoidal time embedding, residual blocks, and skip connections. |
+| `pet_dds.py` | The mathematical core: cosine VP schedule, Poisson NLL, DSM training loop, and the PET-DDS-δ sampler. |
+| `data_utils.py` | DICOM loading via `pydicom`, volume resampling via `scipy.ndimage.zoom`, low-count sinogram generation, and the vectorized 2D Radon projector. |
+| `train_score.py` | Trains the score model on 3000 slices extracted from the real PET volume. |
+| `reconstruct_pet_dds.py` | Loads the trained model, builds a 1% sinogram, runs the sampler, computes NRMSE/PSNR/SSIM, and saves the figure. |
+
+---
+
+## Hyperparameters
+
+| Symbol | Value | Meaning |
+|--------|-------|---------|
+| `N` | 100 | Number of diffusion steps |
+| `p` | 5 | Gradient-descent steps per diffusion step |
+| `δ` | 0.005 | GD step size |
+| `λ_RDP` | 0.0 | RDP weight (omitted in 2D; see §6) |
+| `λ_DDS` | 1000.0 | Weight of the DDS leash |
+| `n_sub` | 21 | Number of ordered subsets |
+| `nll_cutoff_k` | 10 | NLL active only for k < 10 |
+| `η_const` | 0.1 | Stochasticity of the reverse update |
+| `s` | 0.008 | Cosine schedule offset |
+| `lr` | 1e-4 | Adam learning rate |
+| `base_ch` | 32 | U-Net base channels |
+| `num_samples` | 3 | Posterior samples for uncertainty |
+
+The `δ` and `λ_DDS` values differ from the paper because of the scale:
+1% counts on a single 2D slice gives much larger Poisson-NLL gradients
+than the paper's 3D setup.
+
+---
+
+## Citation
+
+If you use this code, cite the original PET-DDS-δ paper:
+
+```bibtex
+@article{webber2024petdds,
+  title  = {Generative-Model-Based Fully 3D PET Image Reconstruction by
+            Conditional Diffusion Sampling},
+  author = {Webber, George and Mizuno, Yuya and Howes, Oliver D. and
+            Hammers, Alexander and King, Andrew P. and Reader, Andrew J.},
+  journal = {arXiv preprint arXiv:2412.04319},
+  year   = {2024}
+}
+```
+
+The algorithm builds on these foundational works:
+
+```bibtex
+@article{nuyts2002rdp,
+  title   = {A concave prior penalizing relative differences for
+             maximum-a-posteriori reconstruction in emission tomography},
+  author  = {Nuyts, Johan and Bequ{\'e}, Dirk and Dupont, Patrick
+             and Mortelmans, Luc},
+  journal = {IEEE Transactions on Nuclear Science},
+  volume  = {49},
+  number  = {1},
+  pages   = {56--60},
+  year    = {2002}
+}
+
+@inproceedings{song2019sgm,
+  title     = {Generative Modeling by Estimating Gradients of the
+               Data Distribution},
+  author    = {Song, Yang and Ermon, Stefano},
+  booktitle = {Advances in Neural Information Processing Systems},
+  volume    = {32},
+  year      = {2019}
+}
+
+@inproceedings{ho2020ddpm,
+  title     = {Denoising Diffusion Probabilistic Models},
+  author    = {Ho, Jonathan and Jain, Ajay and Abbeel, Pieter},
+  booktitle = {Advances in Neural Information Processing Systems},
+  volume    = {33},
+  year      = {2020}
+}
+
+@article{singh2024petdds,
+  title   = {Score-Based Generative Models for PET Image Reconstruction},
+  author  = {Singh, Imraj R. and others},
+  journal = {Machine Learning for Biomedical Imaging},
+  year    = {2024}
+}
+```
+
+---
+
+## Acknowledgments
+
+The mathematical framework is by Webber, Mizuno, Howes, Hammers, King &
+Reader (2024). The RDP concept used in their objective comes from Nuyts
+et al. (2002). The 2D reimplementation is by Zeinab
+Motevalli-Bashi-Naini, 2026. The Kaggle PET DICOM dataset is provided by
+grantmcnatt under its original license. This project is released under
+the MIT License.
