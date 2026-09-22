@@ -202,27 +202,6 @@ deterministic. The update preserves the variance of `x_t` because
 
 ### 6. Note on the relative difference prior (RDP)
 
-Webber et al. (2024) do not write the explicit formula for the Relative
-Difference Prior. They mention "an axial relative difference prior
-(RDP)" in the Theory section and use the symbol `RDP_z` in their
-Eq. (10), but the formula itself is not given. The `z` subscript means
-axial (between adjacent 3D slices).
-
-The explicit RDP formula is older and comes from:
-
-> **Nuyts, J., Bequ, D., Dupont, P., & Mortelmans, L. (2002).**
-> *A concave prior penalizing relative differences for
-> maximum-a-posteriori reconstruction in emission tomography.*
-> IEEE Transactions on Nuclear Science, 49(1), 56–60.
-
-Its standard form is:
-
-$$
-\mathrm{RDP}(x) \;=\; \sum_{\langle i,j \rangle}
-\frac{(x_i - x_j)^2}{\,x_i + x_j + \beta\,|x_i - x_j| + \delta\,}
-$$
-
-with `β = 1.0` and `δ = 1e-9`.
 
 We set `λ_RDP = 0` in this 2D reimplementation. The paper's `RDP_z`
 acts only along the axial direction. It enforces smoothness between
