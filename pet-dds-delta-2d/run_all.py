@@ -2,9 +2,7 @@
 run_all.py
 ==========
 Convenience wrapper: train the score model, then run the reconstruction
-with delta sweep.  Use this on Kaggle so you only need one cell:
 
-    !python run_all.py
 """
 import os
 import subprocess
