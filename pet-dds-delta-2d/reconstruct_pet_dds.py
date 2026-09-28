@@ -20,7 +20,7 @@ The paper uses delta = 0.2 because its Poisson NLL is on the raw count
 scale (10^8 - 10^9 per dataset) so its gradients are of order unity.
 We normalise the NLL by sum(measured) (see poisson_nll in pet_dds.py)
 which makes the gradients ~1e-4.  The correct delta therefore scales up
-by roughly the same factor.  We therefore sweep around 20 rather than 0.2,
+by roughly the same factor.  We therefore sweep around 25 rather than 0.2,
 and pick the value that minimises NRMSE, exactly as the paper did on its
 validation set.
 """
